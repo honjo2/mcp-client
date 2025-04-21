@@ -4,6 +4,7 @@
 
 ```bash
 npm i
-export OPENAI_API_KEY=sk-XXXXXXXXXXXXXXXXXXXXXXXXXXXX
+cp -i .env.example .env
+vi .env
 npx ts-node src/index.ts
 ```

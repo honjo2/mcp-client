@@ -2,12 +2,15 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { z } from 'zod';
+import { z, ZodTypeAny } from 'zod';
 import {
   CallToolResultSchema,
   TextContentSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import OpenAI from 'openai';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 /* ╭──────────────────────────────────────────────╮
    │ 1. MCP サーバ定義の読み込み                    │
@@ -25,27 +28,44 @@ const cfg: MCPServersConfig = JSON.parse(readFileSync(cfgPath, 'utf8'));
 /* ╭──────────────────────────────────────────────╮
    │ 2. ツールメタデータ（Function 定義）           │
    ╰──────────────────────────────────────────────╯ */
-const TOOL_DEFINITIONS = [
-  {
-    name: 'list_directory',
-    description: '指定されたパスの直下にあるファイル／ディレクトリ名を列挙する',
-    parameters: {
-      type: 'object',
-      properties: {
-        path: {
-          type: 'string',
-          description: '絶対パス（例: /Users/honjo2/Desktop）',
-        },
-      },
-      required: ['path'],
-    },
-    // MCP 側マッピング
-    serverKey: 'filesystem',
-    toolName: 'list_directory',
-  },
-] as const;
+async function getToolDefinitions() {
+  const toolDefinitions = [];
 
-type ToolName = (typeof TOOL_DEFINITIONS)[number]['name'];
+  for (const [serverKey, serverConfig] of Object.entries(cfg.mcpServers)) {
+    const transport = new StdioClientTransport({
+      command: serverConfig.command,
+      args: serverConfig.args,
+      env: serverConfig.env,
+    });
+
+    const client = new Client({ name: 'desktop-lister', version: '2.0.0' });
+    await client.connect(transport);
+
+    const tools = (await client.listTools()).tools;
+    // console.log('Debug tools:', tools);
+    toolDefinitions.push(
+      ...(
+        tools as unknown as Array<{
+          name: string;
+          description: string;
+          parameters: unknown;
+        }>
+      ).map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.parameters,
+        serverKey,
+        toolName: tool.name,
+      }))
+    );
+
+    await transport.close();
+  }
+
+  return toolDefinitions;
+}
+
+type ToolName = Awaited<ReturnType<typeof getToolDefinitions>>[number]['name'];
 
 /* ╭──────────────────────────────────────────────╮
    │ 3. OpenAI 初期化                              │
@@ -59,8 +79,9 @@ const openai = new OpenAI({
    ╰──────────────────────────────────────────────╯ */
 async function chooseTool(
   userQuestion: string
-): Promise<{ name: ToolName; arguments: Record<string, unknown> }> {
-  // 1️⃣ Function‑Calling 対応が確認済みのモデルを使う
+): Promise<{ name: string; arguments: Record<string, unknown> }> {
+  const toolDefinitions = await getToolDefinitions();
+
   const MODEL_CANDIDATES = ['gpt-3.5-turbo-0125', 'gpt-4o-release'];
 
   for (const model of MODEL_CANDIDATES) {
@@ -76,22 +97,37 @@ async function chooseTool(
         },
         { role: 'user', content: userQuestion },
       ],
-      tools: TOOL_DEFINITIONS.map(({ name, description, parameters }) => ({
+      tools: toolDefinitions.map(({ name, description, parameters }) => ({
         type: 'function',
-        function: { name, description, parameters },
+        function: {
+          name,
+          description,
+          parameters: parameters as any,
+        },
       })),
-      tool_choice: 'auto', // ✨ 強制的に function 呼び出しを狙う
+      tool_choice: 'auto',
     });
 
     const call = response.choices[0].message.tool_calls?.[0];
     if (call) {
+      // console.log('Debug tool arguments:', call.function.arguments);
+      if (
+        call.function.name === 'list_directory' &&
+        !(call.function.arguments as unknown as Record<string, unknown>)?.path
+      ) {
+        const args =
+          typeof call.function.arguments === 'object' && call.function.arguments
+            ? { ...(call.function.arguments as Record<string, unknown>) }
+            : {};
+        args.path = '/Users/honjo2/Desktop';
+        call.function.arguments = JSON.stringify(args);
+      }
       return {
-        name: call.function.name as ToolName,
+        name: call.function.name,
         arguments: JSON.parse(call.function.arguments ?? '{}'),
       };
     }
 
-    // ツール提案がなければ次のモデルでリトライ
     console.warn(`model=${model} はツールを提案せず → フォールバック`);
   }
 
@@ -105,7 +141,8 @@ async function callMcpTool(
   name: ToolName,
   args: Record<string, unknown>
 ): Promise<string[]> {
-  const def = TOOL_DEFINITIONS.find((d) => d.name === name)!;
+  const toolDefinitions = await getToolDefinitions();
+  const def = toolDefinitions.find((d) => d.name === name)!;
   const server = cfg.mcpServers[def.serverKey];
   if (!server) throw new Error(`サーバ設定が見つかりません: ${def.serverKey}`);
 
