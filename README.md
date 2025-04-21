@@ -7,4 +7,6 @@ npm i
 cp -i .env.example .env
 vi .env
 npx ts-node src/index.ts
+or
+npx ts-node src/index.ts "デスクトップにあるxxxxxフォルダの 名前をxxxxx2に変えて"
 ```

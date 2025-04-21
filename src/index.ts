@@ -91,8 +91,10 @@ async function chooseTool(
         {
           role: 'system',
           content:
-            `あなたはツールオーケストレーターです。` +
+            `あなたはファイルシステム操作のエキスパートです。` +
+            `ユーザーの要求に応じて、ファイルやディレクトリの操作（移動、名前変更、一覧表示など）を実行します。` +
             `一覧から *最適なツールを 1 つだけ* 選び、その function 呼び出しを JSON 形式で返してください。` +
+            `特に、ファイルやフォルダの移動・名前変更の要求の場合は、必ず move_file ツールを選択してください。` +
             `それ以外の通常文章は返さないでください。`,
         },
         { role: 'user', content: userQuestion },
@@ -120,6 +122,20 @@ async function chooseTool(
             ? { ...(call.function.arguments as Record<string, unknown>) }
             : {};
         args.path = '/Users/honjo2/Desktop';
+        call.function.arguments = JSON.stringify(args);
+      } else if (call.function.name === 'move_file') {
+        const args =
+          typeof call.function.arguments === 'object' && call.function.arguments
+            ? { ...(call.function.arguments as Record<string, unknown>) }
+            : {};
+        // デスクトップパスを追加
+        const desktopPath = '/Users/honjo2/Desktop';
+        if (!args.source) {
+          args.source = `${desktopPath}/chromebackup`;
+        }
+        if (!args.destination) {
+          args.destination = `${desktopPath}/chromebackup2`;
+        }
         call.function.arguments = JSON.stringify(args);
       }
       return {
@@ -175,6 +191,9 @@ async function main() {
     'デスクトップにあるファイルのファイル名をリスト化して';
 
   const { name, arguments: toolArgs } = await chooseTool(question);
+  console.log('選択されたツール:', name);
+  console.log('ツールの引数:', JSON.stringify(toolArgs, null, 2));
+
   const filenames = await callMcpTool(name, toolArgs);
 
   console.log('=== 取得結果 ===');
