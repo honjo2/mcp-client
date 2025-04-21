@@ -6,12 +6,12 @@ import { z } from 'zod';
 import {
   CallToolResultSchema,
   TextContentSchema,
-} from '@modelcontextprotocol/sdk/types.js'; // ← CallToolResultSchema と TextContentSchema は SDK が提供&#8203;:contentReference[oaicite:0]{index=0}
+} from '@modelcontextprotocol/sdk/types.js';
+import OpenAI from 'openai';
 
-/* ──────────────────────────────────────────────────────────
-   型定義
-────────────────────────────────────────────────────────── */
-
+/* ╭──────────────────────────────────────────────╮
+   │ 1. MCP サーバ定義の読み込み                    │
+   ╰──────────────────────────────────────────────╯ */
 type MCPServersConfig = {
   mcpServers: Record<
     string,
@@ -19,82 +19,128 @@ type MCPServersConfig = {
   >;
 };
 
-interface Plan {
-  serverKey: string;
-  toolName: string;
-  toolArgs: Record<string, unknown>;
+const cfgPath = resolve(process.cwd(), 'config.json');
+const cfg: MCPServersConfig = JSON.parse(readFileSync(cfgPath, 'utf8'));
+
+/* ╭──────────────────────────────────────────────╮
+   │ 2. ツールメタデータ（Function 定義）           │
+   ╰──────────────────────────────────────────────╯ */
+const TOOL_DEFINITIONS = [
+  {
+    name: 'list_directory',
+    description: '指定されたパスの直下にあるファイル／ディレクトリ名を列挙する',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: '絶対パス（例: /Users/honjo2/Desktop）',
+        },
+      },
+      required: ['path'],
+    },
+    // MCP 側マッピング
+    serverKey: 'filesystem',
+    toolName: 'list_directory',
+  },
+] as const;
+
+type ToolName = (typeof TOOL_DEFINITIONS)[number]['name'];
+
+/* ╭──────────────────────────────────────────────╮
+   │ 3. OpenAI 初期化                              │
+   ╰──────────────────────────────────────────────╯ */
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
+/* ╭──────────────────────────────────────────────╮
+   │ 4. LLM でどのツールを呼ぶか推論                │
+   ╰──────────────────────────────────────────────╯ */
+async function chooseTool(
+  userQuestion: string
+): Promise<{ name: ToolName; arguments: Record<string, unknown> }> {
+  // 1️⃣ Function‑Calling 対応が確認済みのモデルを使う
+  const MODEL_CANDIDATES = ['gpt-3.5-turbo-0125', 'gpt-4o-release'];
+
+  for (const model of MODEL_CANDIDATES) {
+    const response = await openai.chat.completions.create({
+      model,
+      messages: [
+        {
+          role: 'system',
+          content:
+            `あなたはツールオーケストレーターです。` +
+            `一覧から *最適なツールを 1 つだけ* 選び、その function 呼び出しを JSON 形式で返してください。` +
+            `それ以外の通常文章は返さないでください。`,
+        },
+        { role: 'user', content: userQuestion },
+      ],
+      tools: TOOL_DEFINITIONS.map(({ name, description, parameters }) => ({
+        type: 'function',
+        function: { name, description, parameters },
+      })),
+      tool_choice: 'auto', // ✨ 強制的に function 呼び出しを狙う
+    });
+
+    const call = response.choices[0].message.tool_calls?.[0];
+    if (call) {
+      return {
+        name: call.function.name as ToolName,
+        arguments: JSON.parse(call.function.arguments ?? '{}'),
+      };
+    }
+
+    // ツール提案がなければ次のモデルでリトライ
+    console.warn(`model=${model} はツールを提案せず → フォールバック`);
+  }
+
+  throw new Error('LLM がツール呼び出しを提案しませんでした（全モデル失敗）');
 }
 
-/* ──────────────────────────────────────────────────────────
-   設定ファイル読み込み
-────────────────────────────────────────────────────────── */
+/* ╭──────────────────────────────────────────────╮
+   │ 5. MCP 経由で実ツールを呼び出す                │
+   ╰──────────────────────────────────────────────╯ */
+async function callMcpTool(
+  name: ToolName,
+  args: Record<string, unknown>
+): Promise<string[]> {
+  const def = TOOL_DEFINITIONS.find((d) => d.name === name)!;
+  const server = cfg.mcpServers[def.serverKey];
+  if (!server) throw new Error(`サーバ設定が見つかりません: ${def.serverKey}`);
 
-const configPath = resolve(process.cwd(), 'config.json');
-const config: MCPServersConfig = JSON.parse(readFileSync(configPath, 'utf8'));
-
-/* ──────────────────────────────────────────────────────────
-   質問 → ツール呼び出しプラン策定
-────────────────────────────────────────────────────────── */
-
-function planFor(question: string): Plan {
-  if (question.includes('デスクトップ')) {
-    return {
-      serverKey: 'filesystem',
-      toolName: 'list_directory', // server-filesystem が提供する標準ツール
-      toolArgs: { path: '/Users/honjo2/Desktop' },
-    };
-  }
-  throw new Error(
-    `質問に対応する MCP サーバ／ツールが見つかりません: ${question}`
-  );
-}
-
-/* ──────────────────────────────────────────────────────────
-   メイン処理
-────────────────────────────────────────────────────────── */
-
-async function main() {
-  // ユーザの質問は CLI 引数からも受け取れるように
-  const userQuestion =
-    process.argv[2] ?? 'デスクトップにあるファイルのファイル名をリスト化して';
-
-  const { serverKey, toolName, toolArgs } = planFor(userQuestion);
-  const serverConf = config.mcpServers[serverKey];
-  if (!serverConf) {
-    throw new Error(`設定に ${serverKey} の MCP サーバが定義されていません`);
-  }
-
-  // Stdio 経由で MCP サーバを子プロセス起動
   const transport = new StdioClientTransport({
-    command: serverConf.command,
-    args: serverConf.args,
-    env: serverConf.env,
+    command: server.command,
+    args: server.args,
+    env: server.env,
   });
 
-  const client = new Client({
-    name: 'desktop-lister',
-    version: '1.0.0',
-  });
-
+  const client = new Client({ name: 'desktop-lister', version: '2.0.0' });
   await client.connect(transport);
 
-  // ツール呼び出し
-  const rawResult = await client.callTool({
-    name: toolName,
-    arguments: toolArgs,
+  const raw = await client.callTool({
+    name: def.toolName,
+    arguments: args,
   });
 
-  // スキーマ検証で型付け
-  const parsed = CallToolResultSchema.parse(rawResult);
+  const parsed = CallToolResultSchema.parse(raw);
+  return parsed.content
+    .filter((c): c is z.infer<typeof TextContentSchema> => c.type === 'text')
+    .map((c) => c.text.trim());
+}
 
-  // text コンテンツのみ抽出
-  const filenames = parsed.content
-    .filter(
-      (item): item is z.infer<typeof TextContentSchema> => item.type === 'text'
-    )
-    .map((item) => item.text.trim());
+/* ╭──────────────────────────────────────────────╮
+   │ 6. エントリポイント                            │
+   ╰──────────────────────────────────────────────╯ */
+async function main() {
+  const question =
+    process.argv.slice(2).join(' ') ||
+    'デスクトップにあるファイルのファイル名をリスト化して';
 
-  console.log('=== デスクトップのファイル一覧 ===');
+  const { name, arguments: toolArgs } = await chooseTool(question);
+  const filenames = await callMcpTool(name, toolArgs);
+
+  console.log('=== 取得結果 ===');
   console.log(filenames.join('\n'));
 }
 
