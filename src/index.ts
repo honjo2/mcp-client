@@ -42,7 +42,7 @@ async function getToolDefinitions() {
     await client.connect(transport);
 
     const tools = (await client.listTools()).tools;
-    // console.log('Debug tools:', tools);
+    console.log('Debug tools:', tools);
     toolDefinitions.push(
       ...(
         tools as unknown as Array<{
@@ -113,27 +113,10 @@ async function chooseTool(
     const call = response.choices[0].message.tool_calls?.[0];
     if (call) {
       // console.log('Debug tool arguments:', call.function.arguments);
-      if (
-        !(call.function.arguments as unknown as Record<string, unknown>)?.path
-      ) {
-        const args =
-          typeof call.function.arguments === 'object' && call.function.arguments
-            ? { ...(call.function.arguments as Record<string, unknown>) }
-            : {};
-        args.path = process.env.DEFAULT_PATH || '/Users/honjo2/Desktop';
-        call.function.arguments = JSON.stringify(args);
-      } else if (call.function.name === 'move_file') {
-        const args =
-          typeof call.function.arguments === 'object' && call.function.arguments
-            ? { ...(call.function.arguments as Record<string, unknown>) }
-            : {};
-        // デスクトップパスを追加
-        const desktopPath = '/Users/honjo2/Desktop';
-        if (!args.source) {
-          args.source = `${desktopPath}/chromebackup`;
-        }
-        if (!args.destination) {
-          args.destination = `${desktopPath}/chromebackup2`;
+      if (typeof call.function.arguments === 'string') {
+        const args = JSON.parse(call.function.arguments);
+        if (Object.keys(args).length === 0) {
+          args.path = process.env.DEFAULT_PATH || '/Users/honjo2/Desktop';
         }
         call.function.arguments = JSON.stringify(args);
       }
@@ -184,19 +167,57 @@ async function callMcpTool(
 /* ╭──────────────────────────────────────────────╮
    │ 6. エントリポイント                            │
    ╰──────────────────────────────────────────────╯ */
+async function executeToolWithContext(question: string): Promise<void> {
+  // まず許可されたディレクトリを確認
+  const listResult = await callMcpTool('list_allowed_directories', {
+    path: '/Users/honjo2/Desktop',
+  });
+  console.log('=== 許可されたディレクトリ ===');
+  console.log(listResult.join('\n'));
+
+  // ユーザーの要求に対して適切なツールを選択
+  const { name, arguments: toolArgs } = await chooseTool(question);
+  console.log('選択されたツール:', name);
+  console.log('ツールの引数:', JSON.stringify(toolArgs, null, 2));
+
+  const result = await callMcpTool(name, toolArgs);
+  console.log('=== 実行結果 ===');
+  console.log(result.join('\n'));
+}
+
+async function executeFileOperation(
+  source: string,
+  destination: string
+): Promise<void> {
+  // まず許可されたディレクトリを確認
+  const listResult = await callMcpTool('list_allowed_directories', {
+    path: '/Users/honjo2/Desktop',
+  });
+  console.log('=== 許可されたディレクトリ ===');
+  console.log(listResult.join('\n'));
+
+  // ファイル操作を実行
+  const moveResult = await callMcpTool('move_file', {
+    source,
+    destination,
+  });
+  console.log('=== 実行結果 ===');
+  console.log(moveResult.join('\n'));
+}
+
 async function main() {
   const question =
     process.argv.slice(2).join(' ') ||
     'デスクトップにあるファイルのファイル名をリスト化して';
 
-  const { name, arguments: toolArgs } = await chooseTool(question);
-  console.log('選択されたツール:', name);
-  console.log('ツールの引数:', JSON.stringify(toolArgs, null, 2));
-
-  const filenames = await callMcpTool(name, toolArgs);
-
-  console.log('=== 取得結果 ===');
-  console.log(filenames.join('\n'));
+  if (question.includes('名前を') && question.includes('変えて')) {
+    await executeFileOperation(
+      '/Users/honjo2/Desktop/chromebackup',
+      '/Users/honjo2/Desktop/chromebackup2'
+    );
+  } else {
+    await executeToolWithContext(question);
+  }
 }
 
 main().catch((err) => {
