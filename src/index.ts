@@ -91,11 +91,11 @@ async function chooseTool(
         {
           role: 'system',
           content:
-            `あなたはファイルシステム操作のエキスパートです。` +
-            `ユーザーの要求に応じて、ファイルやディレクトリの操作（移動、名前変更、一覧表示など）を実行します。` +
-            `一覧から *最適なツールを 1 つだけ* 選び、その function 呼び出しを JSON 形式で返してください。` +
-            `特に、ファイルやフォルダの移動・名前変更の要求の場合は、必ず move_file ツールを選択してください。` +
-            `それ以外の通常文章は返さないでください。`,
+            `あなたはシステム操作のエキスパートです。` +
+            `利用可能なツールの機能を理解し、ユーザーの要求に最適なツールを選択します。` +
+            `各ツールの説明（description）を注意深く確認し、要求に最も適したツールを1つ選んでください。` +
+            `選択したツールの呼び出しをJSON形式で返してください。` +
+            `通常の文章は返さず、ツールの呼び出し情報のみを返してください。`,
         },
         { role: 'user', content: userQuestion },
       ],
@@ -114,14 +114,13 @@ async function chooseTool(
     if (call) {
       // console.log('Debug tool arguments:', call.function.arguments);
       if (
-        call.function.name === 'list_directory' &&
         !(call.function.arguments as unknown as Record<string, unknown>)?.path
       ) {
         const args =
           typeof call.function.arguments === 'object' && call.function.arguments
             ? { ...(call.function.arguments as Record<string, unknown>) }
             : {};
-        args.path = '/Users/honjo2/Desktop';
+        args.path = process.env.DEFAULT_PATH || '/Users/honjo2/Desktop';
         call.function.arguments = JSON.stringify(args);
       } else if (call.function.name === 'move_file') {
         const args =

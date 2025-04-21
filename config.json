@@ -7,6 +7,12 @@
         "@modelcontextprotocol/server-filesystem",
         "/Users/honjo2/Desktop"
       ]
+    },
+    "mcp-disk-space": {
+      "command": "/Users/honjo2/.local/share/mise/shims/node",
+      "args": [
+        "/Users/honjo2/workspace/test/mcp-disk-space/dist/server.js"
+      ]
     }
   }
 }
