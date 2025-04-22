@@ -38,7 +38,7 @@ async function getToolDefinitions() {
       env: serverConfig.env,
     });
 
-    const client = new Client({ name: 'desktop-lister', version: '2.0.0' });
+    const client = new Client({ name: 'mcp-client', version: '2.0.0' });
     await client.connect(transport);
 
     const tools = (await client.listTools()).tools;
@@ -150,7 +150,7 @@ async function callMcpTool(
     env: server.env,
   });
 
-  const client = new Client({ name: 'desktop-lister', version: '2.0.0' });
+  const client = new Client({ name: 'mcp-client', version: '2.0.0' });
   await client.connect(transport);
 
   const raw = await client.callTool({
@@ -167,57 +167,25 @@ async function callMcpTool(
 /* ╭──────────────────────────────────────────────╮
    │ 6. エントリポイント                            │
    ╰──────────────────────────────────────────────╯ */
-async function executeToolWithContext(question: string): Promise<void> {
-  // まず許可されたディレクトリを確認
-  const listResult = await callMcpTool('list_allowed_directories', {
-    path: '/Users/honjo2/Desktop',
-  });
-  console.log('=== 許可されたディレクトリ ===');
-  console.log(listResult.join('\n'));
-
-  // ユーザーの要求に対して適切なツールを選択
-  const { name, arguments: toolArgs } = await chooseTool(question);
-  console.log('選択されたツール:', name);
+async function executeTool(
+  toolName: string,
+  toolArgs: Record<string, unknown>
+): Promise<void> {
+  console.log('実行するツール:', toolName);
   console.log('ツールの引数:', JSON.stringify(toolArgs, null, 2));
 
-  const result = await callMcpTool(name, toolArgs);
+  const result = await callMcpTool(toolName, toolArgs);
   console.log('=== 実行結果 ===');
   console.log(result.join('\n'));
 }
 
-async function executeFileOperation(
-  source: string,
-  destination: string
-): Promise<void> {
-  // まず許可されたディレクトリを確認
-  const listResult = await callMcpTool('list_allowed_directories', {
-    path: '/Users/honjo2/Desktop',
-  });
-  console.log('=== 許可されたディレクトリ ===');
-  console.log(listResult.join('\n'));
-
-  // ファイル操作を実行
-  const moveResult = await callMcpTool('move_file', {
-    source,
-    destination,
-  });
-  console.log('=== 実行結果 ===');
-  console.log(moveResult.join('\n'));
-}
-
-async function main() {
+async function main(): Promise<void> {
   const question =
     process.argv.slice(2).join(' ') ||
     'デスクトップにあるファイルのファイル名をリスト化して';
 
-  if (question.includes('名前を') && question.includes('変えて')) {
-    await executeFileOperation(
-      '/Users/honjo2/Desktop/chromebackup',
-      '/Users/honjo2/Desktop/chromebackup2'
-    );
-  } else {
-    await executeToolWithContext(question);
-  }
+  const { name: toolName, arguments: toolArgs } = await chooseTool(question);
+  await executeTool(toolName, toolArgs);
 }
 
 main().catch((err) => {
